@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>محاكي الطيران المصغر | Mini Flight Simulator</title>
+<style>
+:root{--pn:rgba(10,20,34,.78);--tx:#eaf4ff;--ac:#5fd4ff;--wr:#ffb020;--bd:rgba(150,200,255,.25);color-scheme:dark}
+@media (prefers-color-scheme:light){:root:not([data-theme=dark]){--pn:rgba(255,255,255,.85);--tx:#10202f;--ac:#005f8a;--wr:#b45f00;--bd:rgba(0,40,80,.25);color-scheme:light}}
+:root[data-theme=dark]{--pn:rgba(10,20,34,.78)}
+*{box-sizing:border-box}html,body{margin:0;height:100%;overflow:hidden;background:#7ab8ff;font-family:"Segoe UI",Tahoma,"Noto Sans Arabic",sans-serif;color:var(--tx);touch-action:none}
+canvas{position:fixed;inset:0}
+#bar{position:fixed;top:env(safe-area-inset-top,0);right:0;left:0;display:flex;gap:6px;padding:8px;overflow-x:auto;z-index:5}
+button{font:inherit;font-size:13px;color:var(--tx);background:var(--pn);border:1px solid var(--bd);border-radius:8px;padding:7px 11px;white-space:nowrap;cursor:pointer;backdrop-filter:blur(6px)}
+button.on{background:var(--ac);color:#04121c;border-color:var(--ac)}button:focus-visible,input:focus-visible{outline:2px solid var(--wr);outline-offset:2px}
+#pn{position:fixed;left:8px;bottom:calc(8px + env(safe-area-inset-bottom,0));width:240px;padding:10px;background:var(--pn);border:1px solid var(--bd);border-radius:10px;font-size:12px;z-index:5;backdrop-filter:blur(6px)}
+#pn label{display:grid;grid-template-columns:52px 1fr 40px;align-items:center;gap:6px;margin:3px 0}#pn input{width:100%;direction:ltr;accent-color:var(--ac)}#pn b{direction:ltr;text-align:left;font-weight:600}
+#ch{position:fixed;right:8px;bottom:calc(8px + env(safe-area-inset-bottom,0));background:var(--pn);border:1px solid var(--bd);border-radius:10px;z-index:5}
+#ms{position:fixed;top:92px;left:0;right:0;text-align:center;font-size:20px;font-weight:700;color:var(--wr);text-shadow:0 1px 4px #000;pointer-events:none;z-index:6}
+#hp{position:fixed;inset:0;display:grid;place-items:center;background:rgba(5,12,22,.72);z-index:9;padding:16px}
+#hp div{max-width:460px;background:var(--pn);color:var(--tx);border:1px solid var(--bd);border-radius:14px;padding:20px;line-height:1.8;font-size:14px}
+#hp h1{margin:0 0 6px;font-size:22px}#hp p{margin:4px 0}#hp kbd{background:var(--bd);border-radius:4px;padding:0 5px;direction:ltr;display:inline-block}
+@media(max-width:760px){#ch{display:none}#pn{left:8px;right:8px;width:auto}}
+</style></head><body>
+<canvas id="c3"></canvas><canvas id="hd"></canvas>
+<div id="bar">
+<button data-m="sim" class="on">قيادة</button><button data-m="manual">تحكم يدوي</button><button data-m="phone">حساسات الهاتف</button>
+<button id="cam">الكاميرا</button><button id="ap">طيار آلي</button><button id="r1">مدرج</button><button id="r2">في الجو</button><button id="rp">إعادة الرحلة</button><button id="hb">مساعدة</button></div>
+<div id="pn"><label>الدفع<input id="th" type="range" min="0" max="100" value="0"><b id="thv">0%</b></label><div id="mn"></div></div>
+<canvas id="ch" width="240" height="96"></canvas>
+<div id="ms"></div>
+<div id="hp"><div><h1>محاكي الطيران المصغر</h1>
+<p>واجهة عرض بيانات الطيران (HUD) مع أفق اصطناعي ونموذج فيزيائي مبسّط ومجسم ثلاثي الأبعاد.</p>
+<p><kbd>S</kbd>/<kbd>W</kbd> رفع/خفض المقدمة، <kbd>A</kbd>/<kbd>D</kbd> ميلان، <kbd>←</kbd>/<kbd>→</kbd> دفة الاتجاه، <kbd>↑</kbd>/<kbd>↓</kbd> الدفع.</p>
+<p>على الهاتف: اسحب بإصبعك على الشاشة كعصا التحكم.</p>
+<p>للإقلاع: ارفع الدفع إلى الحد الأقصى، وعند سرعة 65 عقدة اسحب العصا للخلف. تجنّب السرعة الأقل من 52 عقدة (Stall).</p>
+<p><button id="go" class="on">ابدأ الطيران</button></p></div></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const $=i=>document.getElementById(i),D=Math.PI/180,cl=(v,a,b)=>Math.max(a,Math.min(b,v));
+const c3=$('c3'),hc=$('hd'),X=hc.getContext('2d'),CH=$('ch').getContext('2d');
+let W,H,dpr,mode='sim',prev='sim',camM=0,ap=false,apA=0,apH=0,thr=0,crashT=0,acc=0,ri=0,wasAir=false,msgT=0;
+const st={x:0,z:0,alt:0,hdg:0,pitch:0,roll:0,v:0,vs:0},rec=[],keys={},dg={p:0,r:0},cs={p:0,r:0,y:0};
+function msg(t,ms=2500){$('ms').textContent=t;clearTimeout(msgT);msgT=setTimeout(()=>$('ms').textContent='',ms)}
+// ---------- 3D scene ----------
+const R=new THREE.WebGLRenderer({canvas:c3,antialias:true}),S=new THREE.Scene(),cam=new THREE.PerspectiveCamera(60,1,1,30000);
+S.background=new THREE.Color(0x7ab8ff);S.fog=new THREE.Fog(0xa8d0ff,1500,14000);
+S.add(new THREE.HemisphereLight(0xffffff,0x4a6a44,1));const sn=new THREE.DirectionalLight(0xffffff,.8);sn.position.set(300,600,200);S.add(sn);
+const gr=new THREE.Mesh(new THREE.PlaneGeometry(60000,60000),new THREE.MeshLambertMaterial({color:0x5a8a50}));gr.rotation.x=-Math.PI/2;S.add(gr);
+const gd=new THREE.GridHelper(60000,300,0x4b7a45,0x4b7a45);gd.position.y=.3;S.add(gd);
+const rw=new THREE.Mesh(new THREE.PlaneGeometry(45,1800),new THREE.MeshBasicMaterial({color:0x2c2f36}));rw.rotation.x=-Math.PI/2;rw.position.set(0,.6,-800);S.add(rw);
+for(let i=0;i<30;i++){const m=new THREE.Mesh(new THREE.PlaneGeometry(1.2,24),new THREE.MeshBasicMaterial({color:0xffffff}));m.rotation.x=-Math.PI/2;m.position.set(0,.7,100-i*60);S.add(m)}
+const mt=[];for(let i=0;i<45;i++){let x=(Math.random()-.5)*36000,z=(Math.random()-.5)*36000;if(Math.abs(x)<2000&&z>-4000&&z<800)continue;
+const r=400+Math.random()*1200,h=300+Math.random()*1400,m=new THREE.Mesh(new THREE.ConeGeometry(r,h,8),new THREE.MeshLambertMaterial({color:0x7d7468,flatShading:true}));m.position.set(x,h/2,z);S.add(m);mt.push({x,z,r:r*.9,h})}
+const cm=new THREE.MeshLambertMaterial({color:0xffffff,transparent:true,opacity:.85});
+for(let i=0;i<40;i++){const m=new THREE.Mesh(new THREE.SphereGeometry(1,8,6),cm);m.scale.set(300+Math.random()*500,50+Math.random()*40,200+Math.random()*300);m.position.set((Math.random()-.5)*30000,1100+Math.random()*1400,(Math.random()-.5)*30000);S.add(m)}
+const pl=new THREE.Group(),mat=(c)=>new THREE.MeshLambertMaterial({color:c});
+const fu=new THREE.Mesh(new THREE.CylinderGeometry(.9,.6,10,12),mat(0xf2f2f2));fu.rotation.x=Math.PI/2;
+const ns=new THREE.Mesh(new THREE.ConeGeometry(.9,2.4,12),mat(0xd33a2c));ns.rotation.x=-Math.PI/2;ns.position.z=-6.2;
+const wg=new THREE.Mesh(new THREE.BoxGeometry(15,.25,2.6),mat(0xe9eef5));wg.position.set(0,.5,-.5);
+const tp=new THREE.Mesh(new THREE.BoxGeometry(5.4,.2,1.4),mat(0xe9eef5));tp.position.set(0,.4,4.4);
+const fn=new THREE.Mesh(new THREE.BoxGeometry(.2,2.2,1.8),mat(0xd33a2c));fn.position.set(0,1.5,4.3);
+const pr=new THREE.Mesh(new THREE.BoxGeometry(.15,3.4,.15),mat(0x222222));pr.position.z=-7.5;
+pl.add(fu,ns,wg,tp,fn,pr);pl.rotation.order='YXZ';S.add(pl);
+// ---------- state / reset ----------
+function reset(air){Object.assign(st,{x:0,z:0,hdg:0,pitch:0,roll:0,vs:0,alt:air?450:0,v:air?115:0});setThr(air?62:0);crashT=0;ap=false;ap_ui();wasAir=!!air;cam.position.set(0,12,30);if(mode==='replay')mode=prev}
+function setThr(p){thr=p/100;$('th').value=p;$('thv').textContent=p+'%'}
+$('th').oninput=e=>setThr(+e.target.value);
+const SL=[['sp','السرعة',0,250,110],['al','الارتفاع',0,10000,1500],['pi','الميل',-90,90,0],['ro','الانعراج',-90,90,0],['hd','الاتجاه',0,359,0]];
+$('mn').innerHTML=SL.map(s=>`<label>${s[1]}<input id="${s[0]}" type="range" min="${s[2]}" max="${s[3]}" value="${s[4]}"><b id="${s[0]}v">${s[4]}</b></label>`).join('');
+SL.forEach(s=>$(s[0]).oninput=()=>$(s[0]+'v').textContent=$(s[0]).value);
+function sync(){const v={sp:st.v,al:st.alt*3.281,pi:st.pitch,ro:st.roll,hd:st.hdg};for(const k in v){$(k).value=v[k];$(k+'v').textContent=Math.round(v[k])}}
+function ap_ui(){$('ap').classList.toggle('on',ap)}
+// ---------- modes & input ----------
+let ori=null,oriOn=false;
+function setMode(m){mode=m;document.querySelectorAll('[data-m]').forEach(b=>b.classList.toggle('on',b.dataset.m===m));$('mn').style.display=m==='sim'?'none':'block';
+if(m!=='sim'){ap=false;ap_ui();sync()}
+if(m==='phone'&&!oriOn){const O=window.DeviceOrientationEvent;(O&&O.requestPermission?O.requestPermission():Promise.resolve('granted')).then(r=>{if(r==='granted'){oriOn=true;addEventListener('deviceorientation',e=>ori=e.beta==null?null:e);setTimeout(()=>{if(!ori)msg('لا توجد حساسات حركة في هذا الجهاز، افتح الصفحة على هاتفك')},1500)}else msg('تم رفض إذن الحساسات')}).catch(()=>msg('الحساسات غير مدعومة'))}}
+document.querySelectorAll('[data-m]').forEach(b=>b.onclick=()=>setMode(b.dataset.m));setMode('sim');
+$('cam').onclick=()=>camM^=1;$('ap').onclick=()=>{if(st.alt<30)return msg('شغّل الطيار الآلي بعد الإقلاع');setMode('sim');ap=!ap;apA=st.alt;apH=st.hdg;ap_ui()};
+$('r1').onclick=()=>{setMode('sim');reset(0)};$('r2').onclick=()=>{setMode('sim');reset(1)};
+$('rp').onclick=()=>{if(rec.length<8)return msg('طِر قليلاً أولاً ثم أعد الرحلة');if(mode!=='replay')prev=mode;mode='replay';ri=0;msg('إعادة الرحلة المسجلة',2000)};
+$('hb').onclick=()=>$('hp').style.display='grid';$('go').onclick=()=>$('hp').style.display='none';
+addEventListener('keydown',e=>{keys[e.code]=1;if(e.code.startsWith('Arrow'))e.preventDefault();if(e.code==='KeyC')camM^=1;if(e.code==='KeyP')$('ap').click()});addEventListener('keyup',e=>keys[e.code]=0);
+let dr=null;addEventListener('pointerdown',e=>{if(e.target===hc)dr=[e.clientX,e.clientY]});addEventListener('pointerup',()=>{dr=null;dg.p=dg.r=0});
+addEventListener('pointermove',e=>{if(dr){dg.r=cl((e.clientX-dr[0])/70,-1,1);dg.p=cl((e.clientY-dr[1])/70,-1,1)}});
+// ---------- physics ----------
+const mix=(a,b,f)=>a+(b-a)*f,adiff=(a,b)=>((b-a+540)%360)-180;
+function crash(t){crashT=2.8;st.v=0;msg(t+' — سيُعاد التشغيل تلقائياً',2600)}
+function step(dt){
+if(crashT>0){crashT-=dt;if(crashT<=0)reset(0);return}
+if(mode==='replay'){ri+=dt*4;const i=Math.floor(ri),a=rec[i],b=rec[i+1];if(!b){mode=prev;msg('انتهت الإعادة',1500);return}
+const f=ri-i;['x','z','alt','pitch','roll','v','vs'].forEach(k=>st[k]=mix(a[k],b[k],f));st.hdg=(a.hdg+adiff(a.hdg,b.hdg)*f+360)%360;thr=a.thr;return}
+const vms=()=>st.v*.514;
+if(mode==='sim'){
+ const kp=(keys.KeyS?1:0)-(keys.KeyW?1:0),kr=(keys.KeyD?1:0)-(keys.KeyA?1:0),ky=(keys.ArrowRight?1:0)-(keys.ArrowLeft?1:0);
+ if(keys.ArrowUp||keys.ArrowDown){setThr(Math.round(cl(thr*100+((keys.ArrowUp?1:0)-(keys.ArrowDown?1:0))*50*dt,0,100)*10)/10)}
+ let tp_=cl(kp+dg.p,-1,1),tr=cl(kr+dg.r,-1,1);
+ if(ap&&Math.abs(tp_)+Math.abs(tr)>.05){ap=false;ap_ui();msg('تم إيقاف الطيار الآلي',1200)}
+ if(ap){const pT=cl((apA-st.alt)*.02,-8,8),rT=cl(adiff(st.hdg,apH)*1.5,-25,25);tp_=cl((pT-st.pitch)*.15,-1,1);tr=cl((rT-st.roll)*.1,-1,1)}
+ cs.p+=cl(tp_-cs.p,-3*dt,3*dt);cs.r+=cl(tr-cs.r,-3*dt,3*dt);cs.y=ky;
+ const air=st.alt>.3;let a=35*thr-.0016*st.v*st.v-19*Math.sin(st.pitch*D);if(!air)a-=2+(thr<.05?8:0);
+ st.v=Math.max(0,st.v+a*dt);
+ const stall=air&&st.v<52;let p=cs.p;if(stall)p=Math.min(p,0);
+ st.pitch=cl(st.pitch+p*25*dt-(stall?22*dt:0),-80,80);
+ if(!air){st.roll=0;st.pitch=st.v<62?0:Math.max(0,st.pitch);st.hdg+=(cs.r+cs.y)*12*dt*Math.min(1,st.v/25)}
+ else{st.roll=cl(st.roll+cs.r*60*dt-st.roll*.08*dt,-85,85);st.hdg+=((9.81*Math.tan(st.roll*D)/Math.max(vms(),20))/D+cs.y*4)*dt}
+ st.hdg=(st.hdg%360+360)%360;
+ const vz=vms()*Math.sin(st.pitch*D);st.alt+=vz*dt;st.vs=vz*196.85;
+ if(st.alt<=0){if(wasAir&&(vz<-6||Math.abs(st.roll)>25||st.pitch<-8))return crash('تحطمت الطائرة عند الهبوط');if(wasAir&&vz<-2.5)msg('هبوط قاسٍ',1500);st.alt=0;st.vs=0;if(st.pitch<0)st.pitch=0;wasAir=false}else wasAir=true;
+ for(const m of mt){const d=Math.hypot(st.x-m.x,st.z-m.z);if(d<m.r&&st.alt<m.h*(1-d/m.r))return crash('اصطدمت بالجبل')}
+}else{
+ st.v=+$('sp').value;st.alt=$('al').value/3.281;
+ if(mode==='phone'&&ori){st.pitch=cl(ori.beta-90,-85,85);st.roll=cl(ori.gamma||0,-85,85);st.hdg=(360-(ori.alpha||0))%360;sync2()}
+ else if(mode==='manual'){st.pitch=+$('pi').value;st.roll=+$('ro').value;st.hdg=+$('hd').value}
+ st.vs=vms()*Math.sin(st.pitch*D)*196.85;wasAir=st.alt>1}
+const v=vms()*Math.cos(st.pitch*D)*dt;st.x+=v*Math.sin(st.hdg*D);st.z-=v*Math.cos(st.hdg*D);
+}
+function sync2(){$('pi').value=st.pitch;$('ro').value=st.roll;$('hd').value=st.hdg;$('piv').textContent=Math.round(st.pitch);$('rov').textContent=Math.round(st.roll);$('hdv').textContent=Math.round(st.hdg)}
+// ---------- HUD ----------
+const HC='#eaf4ff',AC='#5fd4ff',WC='#ffb020';
+function tape(xe,d,val,rng,step_,lab,title){
+ const hh=Math.min(H*.2,140),cy=H*.42,pp=hh*2/rng,x0=d>0?xe-62:xe;
+ X.save();X.fillStyle='rgba(8,18,30,.45)';X.fillRect(x0,cy-hh,62,hh*2);X.beginPath();X.rect(x0,cy-hh,62,hh*2);X.clip();
+ X.fillStyle=X.strokeStyle=HC;X.font='12px sans-serif';X.textBaseline='middle';X.textAlign=d>0?'right':'left';X.lineWidth=1.5;
+ for(let k=Math.ceil((val-rng/2)/step_)*step_;k<=val+rng/2;k+=step_){if(k<0)continue;const y=cy-(k-val)*pp,L=k%lab===0?14:7;X.beginPath();X.moveTo(xe,y);X.lineTo(xe-d*L,y);X.stroke();if(k%lab===0)X.fillText(k,xe-d*18,y)}
+ X.restore();X.fillStyle='rgba(8,18,30,.9)';X.strokeStyle=AC;X.lineWidth=2;X.fillRect(x0+3,cy-12,56,24);X.strokeRect(x0+3,cy-12,56,24);
+ X.fillStyle=HC;X.font='bold 15px sans-serif';X.textAlign='center';X.fillText(Math.round(val),x0+31,cy);
+ X.font='11px sans-serif';X.fillStyle=AC;X.fillText(title,x0+31,cy-hh-10)}
+function hdgTape(){const w=Math.min(W*.5,360),cx=W/2,y=62,pp=w/60,h=st.hdg;X.save();X.fillStyle='rgba(8,18,30,.45)';X.fillRect(cx-w/2,y,w,30);X.beginPath();X.rect(cx-w/2,y,w,30);X.clip();
+ X.fillStyle=X.strokeStyle=HC;X.font='12px sans-serif';X.textAlign='center';X.textBaseline='middle';X.lineWidth=1.5;
+ for(let k=Math.ceil((h-30)/5)*5;k<=h+30;k+=5){const n=((k%360)+360)%360,x=cx+(k-h)*pp;X.beginPath();X.moveTo(x,y);X.lineTo(x,y+(n%10?5:10));X.stroke();if(n%10===0)X.fillText(n===0?'N':n===90?'E':n===180?'S':n===270?'W':n/10,x,y+20)}
+ X.restore();X.fillStyle=AC;X.beginPath();X.moveTo(cx,y+31);X.lineTo(cx-6,y+40);X.lineTo(cx+6,y+40);X.fill();
+ X.fillStyle=HC;X.font='bold 13px sans-serif';X.fillText(String(Math.round(h)%360).padStart(3,'0')+'°',cx,y-9)}
+function ball(cx,cy,r){X.save();X.beginPath();X.arc(cx,cy,r,0,7);X.clip();X.translate(cx,cy);X.rotate(-st.roll*D);
+ const pp=r/25,py=st.pitch*pp;X.fillStyle='#2f86d6';X.fillRect(-3*r,-5*r+py,6*r,5*r);X.fillStyle='#8a5a32';X.fillRect(-3*r,py,6*r,5*r);
+ X.strokeStyle=X.fillStyle='#fff';X.lineWidth=2;X.beginPath();X.moveTo(-3*r,py);X.lineTo(3*r,py);X.stroke();X.lineWidth=1.3;X.font='10px sans-serif';X.textAlign='center';X.textBaseline='middle';
+ for(let a=-30;a<=30;a+=5){if(!a)continue;const y=py-a*pp,L=a%10?r*.2:r*.45;X.beginPath();X.moveTo(-L,y);X.lineTo(L,y);X.stroke();if(a%10===0){X.fillText(Math.abs(a),-L-9,y);X.fillText(Math.abs(a),L+9,y)}}
+ X.restore();X.lineWidth=2;X.strokeStyle='rgba(234,244,255,.9)';X.beginPath();X.arc(cx,cy,r,0,7);X.stroke();
+ for(const a of [-60,-45,-30,-20,-10,0,10,20,30,45,60]){const q=a*D,L=a%30===0?10:6;X.beginPath();X.moveTo(cx+Math.sin(q)*r,cy-Math.cos(q)*r);X.lineTo(cx+Math.sin(q)*(r+L),cy-Math.cos(q)*(r+L));X.stroke()}
+ X.save();X.translate(cx,cy);X.rotate(-st.roll*D);X.fillStyle=AC;X.beginPath();X.moveTo(0,-r+1);X.lineTo(-6,-r+13);X.lineTo(6,-r+13);X.fill();X.restore();
+ X.strokeStyle=WC;X.lineWidth=3;X.beginPath();X.moveTo(cx-r*.65,cy);X.lineTo(cx-r*.22,cy);X.lineTo(cx-r*.22,cy+8);X.moveTo(cx+r*.65,cy);X.lineTo(cx+r*.22,cy);X.lineTo(cx+r*.22,cy+8);X.stroke();X.fillStyle=WC;X.fillRect(cx-2,cy-2,4,4)}
+function warns(){const alt=st.alt*3.281,w=[];if(st.alt>.3&&st.v<52)w.push('STALL');if(st.v>180)w.push('OVERSPEED');if(st.alt>5&&alt<500&&st.vs<-1200)w.push('PULL UP');if(Math.abs(st.roll)>60)w.push('BANK ANGLE');return w}
+function hud(){X.clearRect(0,0,W,H);X.shadowColor='rgba(0,0,0,.75)';X.shadowBlur=3;
+ tape(74,1,st.v,60,5,10,'SPD KT');tape(W-74,-1,st.alt*3.281,400,20,100,'ALT FT');hdgTape();
+ const r=cl(Math.min(W,H)*.15,52,105),nar=W<760,off=nar&&mode!=='sim'?$('pn').offsetHeight+10:nar?$('pn').offsetHeight+10:0,cx=W/2,cy=H-r-18-off;ball(cx,cy,r);
+ X.font='12px sans-serif';X.textBaseline='top';X.fillStyle=HC;X.textAlign='right';
+ [`PITCH ${st.pitch.toFixed(1)}°`,`ROLL ${st.roll.toFixed(1)}°`,`THR ${Math.round(thr*100)}%`].forEach((t,i)=>X.fillText(t,cx-r-14,cy-r*.5+i*17));
+ X.textAlign='left';[`V/S ${Math.round(st.vs)}`,`G.S ${Math.round(st.v)}`,ap?'AP ON':'AP OFF'].forEach((t,i)=>{X.fillStyle=i===2&&ap?AC:HC;X.fillText(t,cx+r+14,cy-r*.5+i*17)});
+ const w=warns();if(w.length&&Math.floor(performance.now()/350)%2){X.font='bold 26px sans-serif';X.fillStyle=WC;X.textAlign='center';X.textBaseline='middle';X.fillText(w.join('  '),W/2,H*.3)}
+ X.shadowBlur=0}
+function chart(){const g=CH,w=240,h=96;g.clearRect(0,0,w,h);const d=rec.slice(-120);if(d.length<2)return;
+ const mA=Math.max(1000,...d.map(s=>s.alt*3.281)),pt=(f,mx)=>d.forEach((s,i)=>{const x=i/119*w,y=h-8-f(s)/mx*(h-22);i?g.lineTo(x,y):(g.beginPath(),g.moveTo(x,y))});
+ g.lineWidth=1.6;g.strokeStyle='#5fd4ff';pt(s=>s.alt*3.281,mA);g.stroke();g.strokeStyle='#ffb020';pt(s=>s.v,250);g.stroke();
+ g.font='10px sans-serif';g.fillStyle='#5fd4ff';g.fillText('ALT ft',6,11);g.fillStyle='#ffb020';g.fillText('SPD kt',56,11);g.fillStyle='#9ab';g.fillText('آخر 30 ثانية',170,11)}
+// ---------- main loop ----------
+function rs(){W=innerWidth;H=innerHeight;dpr=Math.min(devicePixelRatio||1,2);R.setPixelRatio(dpr);R.setSize(W,H);hc.width=W*dpr;hc.height=H*dpr;hc.style.width=W+'px';hc.style.height=H+'px';X.setTransform(dpr,0,0,dpr,0,0);cam.aspect=W/H;cam.updateProjectionMatrix()}
+addEventListener('resize',rs);rs();reset(1);
+let last=performance.now();
+function loop(t){const dt=Math.min((t-last)/1000,.05);last=t;step(dt);
+ if(mode!=='replay'&&crashT<=0){acc+=dt;if(acc>=.25){acc-=.25;rec.push({...st,thr});if(rec.length>2400)rec.shift();chart()}}
+ pl.position.set(st.x,st.alt+1.2,st.z);pl.rotation.set(st.pitch*D,-st.hdg*D,-st.roll*D);pl.visible=camM===0;
+ const f=new THREE.Vector3(Math.sin(st.hdg*D),0,-Math.cos(st.hdg*D));
+ if(camM){cam.rotation.order='YXZ';cam.rotation.set(st.pitch*D,-st.hdg*D,-st.roll*D);cam.position.set(st.x,st.alt+2.6,st.z).addScaledVector(f,3)}
+ else{const k=1-Math.exp(-dt*4),tg=new THREE.Vector3(st.x,st.alt+8,st.z).addScaledVector(f,-28);cam.position.lerp(tg,k);cam.position.y=Math.max(cam.position.y,3);cam.lookAt(st.x+f.x*30,st.alt+3,st.z+f.z*30)}
+ R.render(S,cam);hud();requestAnimationFrame(loop)}
+requestAnimationFrame(loop);
+</script></body></html>
